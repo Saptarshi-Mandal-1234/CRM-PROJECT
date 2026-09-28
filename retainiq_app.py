@@ -46,7 +46,10 @@ def _try_download_from_release() -> dict:
     """
     Try to download each CSV from the GitHub Release.
     Returns dict {key: BytesIO} for files that downloaded OK, empty dict on failure.
+    Set env var SKIP_RELEASE_DOWNLOAD=1 to bypass (e.g. for local dev / screenshots).
     """
+    if os.environ.get("SKIP_RELEASE_DOWNLOAD", "0") == "1":
+        return {}
     try:
         import urllib.request
         buffers = {}
