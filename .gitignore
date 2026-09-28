@@ -1,0 +1,15 @@
+# Dataset - download from Kaggle, do not commit
+data/
+
+# Power BI generated outputs - run prepare_powerbi_data.py locally
+powerbi/output/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# OS
+.DS_Store
+Thumbs.db

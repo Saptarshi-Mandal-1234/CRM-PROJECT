@@ -1,0 +1,6 @@
+streamlit==1.64.0
+pandas==3.0.6
+numpy==2.5.3
+plotly==7.1.0
+# Optional – only needed for AI Advisor with LLM
+# anthropic>=0.20.0
