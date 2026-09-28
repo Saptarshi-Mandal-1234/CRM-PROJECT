@@ -4,6 +4,10 @@
 
 **Business Question:** Where should management spend retention and delivery-improvement budget to protect and grow revenue?
 
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://crm-project-kdenz3kyr9f3wxdewy7s4u.streamlit.app/)
+
+🚀 **Live App:** [https://crm-project-kdenz3kyr9f3wxdewy7s4u.streamlit.app/](https://crm-project-kdenz3kyr9f3wxdewy7s4u.streamlit.app/)
+
 ---
 
 ## Tech Stack
@@ -36,7 +40,7 @@ data/
   product_category_name_translation.csv
 ```
 
-The `data/` folder is NOT shipped with this repo — you must download and extract it yourself.
+> **Note:** The app auto-downloads the dataset from GitHub Release assets on first load — no manual setup needed when using the live app.
 
 ---
 
