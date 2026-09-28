@@ -276,44 +276,61 @@ def ai_brief(stats: dict) -> str:
 st.sidebar.title("⚙️ RetainIQ Controls")
 data_dir = st.sidebar.text_input("Data folder path", value="data")
 
-# ── DATA SOURCING — three-layer cascade ──────────────────────────────────────
-# Layer 1: try GitHub Release auto-download (Option 3)
-with st.spinner("Checking for data…"):
-    _release_buffers = _try_download_from_release()
+# ── Custom dataset toggle ─────────────────────────────────────────────────────
+use_upload = st.sidebar.checkbox(
+    "📂 Upload custom dataset",
+    value=False,
+    help="Check to swap in your own Olist-format CSVs instead of the default dataset"
+)
 
-# Layer 2: try disk / release buffers (Option 1 + 3)
-df_raw, missing = load_data(data_dir, _release_buffers=_release_buffers or None)
-
-# Layer 3: if still missing, offer file uploader (Option 2)
-if missing:
-    st.warning(
-        f"**Data not found in `{data_dir}/` and GitHub Release assets unavailable.**\n\n"
-        f"Upload the 6 required CSVs below, **or** download from "
-        f"[Kaggle]({KAGGLE_URL}), extract into `data/`, and refresh."
-    )
-    st.sidebar.markdown("### 📂 Upload CSVs")
+if use_upload:
+    # Show uploaders immediately — user wants to supply their own data
+    st.sidebar.markdown("**Upload all 6 CSV files:**")
     uploaded = {
-        "orders":      st.sidebar.file_uploader("olist_orders_dataset.csv",      type="csv", key="up_orders"),
-        "items":       st.sidebar.file_uploader("olist_order_items_dataset.csv",  type="csv", key="up_items"),
-        "customers":   st.sidebar.file_uploader("olist_customers_dataset.csv",    type="csv", key="up_cust"),
-        "reviews":     st.sidebar.file_uploader("olist_order_reviews_dataset.csv",type="csv", key="up_rev"),
-        "products":    st.sidebar.file_uploader("olist_products_dataset.csv",     type="csv", key="up_prod"),
+        "orders":      st.sidebar.file_uploader("olist_orders_dataset.csv",       type="csv", key="up_orders"),
+        "items":       st.sidebar.file_uploader("olist_order_items_dataset.csv",   type="csv", key="up_items"),
+        "customers":   st.sidebar.file_uploader("olist_customers_dataset.csv",     type="csv", key="up_cust"),
+        "reviews":     st.sidebar.file_uploader("olist_order_reviews_dataset.csv", type="csv", key="up_rev"),
+        "products":    st.sidebar.file_uploader("olist_products_dataset.csv",      type="csv", key="up_prod"),
         "translation": st.sidebar.file_uploader("product_category_name_translation.csv", type="csv", key="up_trans"),
     }
     still_missing = [NEEDED_FILES[k] for k, v in uploaded.items() if v is None]
     if still_missing:
         st.info(
-            f"Still waiting for: **{', '.join(still_missing)}**\n\n"
-            f"Upload all 6 files in the sidebar to continue."
+            f"📂 **Upload your dataset** — still waiting for:\n\n"
+            f"**{', '.join(still_missing)}**\n\n"
+            f"Upload all 6 files in the sidebar to load the dashboard. "
+            f"Files must follow the [Olist schema]({KAGGLE_URL})."
         )
         st.stop()
-    # All 6 uploaded — build from buffers
-    df_raw, missing = load_data_from_uploads(uploaded)
+    with st.spinner("Loading your dataset…"):
+        df_raw, missing = load_data_from_uploads(uploaded)
+    if missing or df_raw is None:
+        st.error("Could not build dataset from uploaded files. Check that all 6 CSVs are correct.")
+        st.stop()
+    st.sidebar.success("✅ Custom dataset loaded!")
 
-# Final stop if nothing worked
-if missing or df_raw is None:
-    st.error("Could not load data. Please check the sidebar instructions.")
-    st.stop()
+else:
+    # ── Default data cascade: Release download → disk ─────────────────────────
+    # Layer 1: try GitHub Release auto-download
+    with st.spinner("Loading data…"):
+        _release_buffers = _try_download_from_release()
+
+    # Layer 2: disk or release buffers
+    df_raw, missing = load_data(data_dir, _release_buffers=_release_buffers or None)
+
+    # Layer 3: fallback uploaders if both above fail
+    if missing:
+        st.warning(
+            f"**Data not found in `{data_dir}/` and GitHub Release unavailable.**\n\n"
+            f"Tick **'Upload custom dataset'** in the sidebar, or download from "
+            f"[Kaggle]({KAGGLE_URL}), extract into `data/`, and refresh."
+        )
+        st.stop()
+
+    if missing or df_raw is None:
+        st.error("Could not load data. Please check the sidebar instructions.")
+        st.stop()
 
 # Sidebar filters
 min_d = df_raw["order_purchase_timestamp"].min().date()
