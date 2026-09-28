@@ -1,8 +1,14 @@
 # RetainIQ – E-commerce CRM Decision Dashboard
 # Streamlit single-file app: backend + frontend + analysis
 # Revenue = item price (freight excluded from revenue, shown separately where relevant)
+#
+# Data sourcing — three layers (tried in order):
+#   1. Auto-download: CSVs fetched from GitHub Release assets at startup (Option 3)
+#   2. File uploader: user drags-and-drops CSVs in the sidebar (Option 2)
+#   3. Local folder:  reads from data/ on disk — works locally & Streamlit Cloud
+#                     when CSVs are committed to the repo (Option 1)
 
-import os, warnings
+import io, os, warnings
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -15,31 +21,141 @@ warnings.filterwarnings("ignore")
 st.set_page_config(page_title="RetainIQ", page_icon="📊", layout="wide")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-KAGGLE_URL = "https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce"
+KAGGLE_URL  = "https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce"
 RFM_LABELS  = ["Champions", "Loyal", "At Risk", "Lost"]
 
-# ── Data loading (cached) ─────────────────────────────────────────────────────
+# Option 3 – GitHub Release download URLs
+# These point to the v1.0 release assets on the repo.
+# If the release doesn't exist yet, downloads are silently skipped.
+GITHUB_RELEASE_BASE = (
+    "https://github.com/Saptarshi-Mandal-1234/CRM-Project/"
+    "releases/download/v1.0-data/"
+)
+NEEDED_FILES = {
+    "orders":      "olist_orders_dataset.csv",
+    "items":       "olist_order_items_dataset.csv",
+    "customers":   "olist_customers_dataset.csv",
+    "reviews":     "olist_order_reviews_dataset.csv",
+    "products":    "olist_products_dataset.csv",
+    "translation": "product_category_name_translation.csv",
+}
+
+# ── Option 3: auto-download CSVs from GitHub Release ─────────────────────────
+@st.cache_data(show_spinner=False)
+def _try_download_from_release() -> dict:
+    """
+    Try to download each CSV from the GitHub Release.
+    Returns dict {key: BytesIO} for files that downloaded OK, empty dict on failure.
+    """
+    try:
+        import urllib.request
+        buffers = {}
+        for key, fname in NEEDED_FILES.items():
+            url = GITHUB_RELEASE_BASE + fname
+            try:
+                with urllib.request.urlopen(url, timeout=15) as resp:
+                    if resp.status == 200:
+                        buffers[key] = io.BytesIO(resp.read())
+            except Exception:
+                pass   # individual file missing — handled below
+        return buffers
+    except Exception:
+        return {}
+
+# ── Core build function: takes file-like objects for each CSV ─────────────────
+@st.cache_data(show_spinner=False)
+def _build_dataframe(
+    orders_buf, items_buf, cust_buf, reviews_buf, products_buf, trans_buf
+):
+    """Join and clean all CSVs from in-memory buffers. Returns master DataFrame."""
+    orders   = pd.read_csv(orders_buf)
+    items    = pd.read_csv(items_buf)
+    cust     = pd.read_csv(cust_buf)
+    reviews  = pd.read_csv(reviews_buf)
+    products = pd.read_csv(products_buf)
+    trans    = pd.read_csv(trans_buf)
+
+    # Delivered orders only
+    orders = orders[orders["order_status"] == "delivered"].copy()
+
+    # Parse dates
+    for col in ["order_purchase_timestamp", "order_delivered_customer_date",
+                "order_estimated_delivery_date"]:
+        orders[col] = pd.to_datetime(orders[col], errors="coerce")
+
+    # Delivery metrics
+    orders["delivery_days"] = (
+        orders["order_delivered_customer_date"] - orders["order_purchase_timestamp"]
+    ).dt.days
+    orders["is_late"] = (
+        orders["order_delivered_customer_date"] > orders["order_estimated_delivery_date"]
+    )
+
+    # Join customers
+    orders = orders.merge(cust[["customer_id", "customer_unique_id", "customer_state"]],
+                          on="customer_id", how="left")
+
+    # Deduplicate reviews: keep highest score per order
+    reviews_dedup = (reviews.sort_values("review_score", ascending=False)
+                            .drop_duplicates("order_id")[["order_id", "review_score"]])
+
+    # Join items + products + translation
+    products = products.merge(trans, on="product_category_name", how="left")
+    items = items.merge(products[["product_id", "product_category_name_english"]],
+                        on="product_id", how="left")
+    items["category"] = items["product_category_name_english"].fillna("unknown")
+
+    # Aggregate items to order level
+    items_agg = items.groupby("order_id").agg(
+        revenue=("price", "sum"),
+        freight=("freight_value", "sum"),
+        category=("category", lambda x: x.mode().iloc[0] if len(x) > 0 else "unknown")
+    ).reset_index()
+
+    # Master join
+    df = orders.merge(items_agg, on="order_id", how="inner")
+    df = df.merge(reviews_dedup, on="order_id", how="left")
+    df["purchase_month"] = df["order_purchase_timestamp"].dt.to_period("M")
+    return df
+
+# ── Option 1 / 3 unified loader: disk folder or pre-fetched buffers ───────────
 @st.cache_data
-def load_data(data_dir: str):
-    """Load, join, and clean all CSV files. Returns master DataFrame."""
-    needed = {
-        "orders":       "olist_orders_dataset.csv",
-        "items":        "olist_order_items_dataset.csv",
-        "customers":    "olist_customers_dataset.csv",
-        "reviews":      "olist_order_reviews_dataset.csv",
-        "products":     "olist_products_dataset.csv",
-        "translation":  "product_category_name_translation.csv",
-    }
-    missing = [v for v in needed.values() if not os.path.exists(f"{data_dir}/{v}")]
+def load_data(data_dir: str, _release_buffers: dict = None):
+    """
+    Priority:
+      1. release_buffers (downloaded from GitHub Release)  [Option 3]
+      2. data_dir on disk                                  [Option 1 / local]
+    Returns (df, missing_list).
+    """
+    buffers = _release_buffers or {}
+
+    def get(key, fname):
+        if key in buffers:
+            buffers[key].seek(0)
+            return buffers[key]
+        path = f"{data_dir}/{fname}"
+        if os.path.exists(path):
+            return path
+        return None
+
+    sources = {k: get(k, v) for k, v in NEEDED_FILES.items()}
+    missing = [NEEDED_FILES[k] for k, v in sources.items() if v is None]
     if missing:
         return None, missing
 
-    orders   = pd.read_csv(f"{data_dir}/{needed['orders']}")
-    items    = pd.read_csv(f"{data_dir}/{needed['items']}")
-    cust     = pd.read_csv(f"{data_dir}/{needed['customers']}")
-    reviews  = pd.read_csv(f"{data_dir}/{needed['reviews']}")
-    products = pd.read_csv(f"{data_dir}/{needed['products']}")
-    trans    = pd.read_csv(f"{data_dir}/{needed['translation']}")
+    return _build_dataframe(
+        sources["orders"], sources["items"], sources["customers"],
+        sources["reviews"], sources["products"], sources["translation"]
+    ), []
+
+# ── Option 2: load from uploaded file objects ─────────────────────────────────
+@st.cache_data(show_spinner=False)
+def load_data_from_uploads(uploads: dict):
+    """Build dataframe from st.file_uploader UploadedFile objects."""
+    return _build_dataframe(
+        uploads["orders"], uploads["items"], uploads["customers"],
+        uploads["reviews"], uploads["products"], uploads["translation"]
+    ), []
 
     # Delivered orders only
     orders = orders[orders["order_status"] == "delivered"].copy()
@@ -159,14 +275,44 @@ def ai_brief(stats: dict) -> str:
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 st.sidebar.title("⚙️ RetainIQ Controls")
 data_dir = st.sidebar.text_input("Data folder path", value="data")
-df_raw, missing = load_data(data_dir)
 
+# ── DATA SOURCING — three-layer cascade ──────────────────────────────────────
+# Layer 1: try GitHub Release auto-download (Option 3)
+with st.spinner("Checking for data…"):
+    _release_buffers = _try_download_from_release()
+
+# Layer 2: try disk / release buffers (Option 1 + 3)
+df_raw, missing = load_data(data_dir, _release_buffers=_release_buffers or None)
+
+# Layer 3: if still missing, offer file uploader (Option 2)
 if missing:
-    st.error(
-        f"**Missing data files:** {missing}\n\n"
-        f"Download the dataset from [Kaggle]({KAGGLE_URL}), extract all CSVs into a folder "
-        f"called **`data/`** in the project root, then refresh."
+    st.warning(
+        f"**Data not found in `{data_dir}/` and GitHub Release assets unavailable.**\n\n"
+        f"Upload the 6 required CSVs below, **or** download from "
+        f"[Kaggle]({KAGGLE_URL}), extract into `data/`, and refresh."
     )
+    st.sidebar.markdown("### 📂 Upload CSVs")
+    uploaded = {
+        "orders":      st.sidebar.file_uploader("olist_orders_dataset.csv",      type="csv", key="up_orders"),
+        "items":       st.sidebar.file_uploader("olist_order_items_dataset.csv",  type="csv", key="up_items"),
+        "customers":   st.sidebar.file_uploader("olist_customers_dataset.csv",    type="csv", key="up_cust"),
+        "reviews":     st.sidebar.file_uploader("olist_order_reviews_dataset.csv",type="csv", key="up_rev"),
+        "products":    st.sidebar.file_uploader("olist_products_dataset.csv",     type="csv", key="up_prod"),
+        "translation": st.sidebar.file_uploader("product_category_name_translation.csv", type="csv", key="up_trans"),
+    }
+    still_missing = [NEEDED_FILES[k] for k, v in uploaded.items() if v is None]
+    if still_missing:
+        st.info(
+            f"Still waiting for: **{', '.join(still_missing)}**\n\n"
+            f"Upload all 6 files in the sidebar to continue."
+        )
+        st.stop()
+    # All 6 uploaded — build from buffers
+    df_raw, missing = load_data_from_uploads(uploaded)
+
+# Final stop if nothing worked
+if missing or df_raw is None:
+    st.error("Could not load data. Please check the sidebar instructions.")
     st.stop()
 
 # Sidebar filters

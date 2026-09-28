@@ -1,5 +1,5 @@
-# Dataset - download from Kaggle, do not commit
-data/
+# Geolocation CSV is 58MB - excluded (not used by the app)
+data/olist_geolocation_dataset.csv
 
 # Power BI generated outputs - run prepare_powerbi_data.py locally
 powerbi/output/
@@ -13,3 +13,4 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
